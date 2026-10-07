@@ -1,6 +1,7 @@
-# Conversor MKV a HLS para MundoYuri
+# Conversor de video a HLS para MundoYuri
 
-El conversor valida que cada entrada sea un MKV/Matroska real, extrae **todas** las
+El conversor acepta extensiones comunes de video (`.mkv`, `.mp4`, `.mov`, `.avi`,
+`.webm`, `.m4v`, `.ts`, entre otras), extrae **todas** las
 pistas de subtitulos sin perdida (`.mks`), convierte a WebVTT las pistas de texto y
 genera HLS VOD con segmentos de 20 segundos.
 
@@ -26,8 +27,8 @@ web porque necesitan OCR para convertirse en texto.
 El ejecutable incluido en `dist` lleva `ffmpeg` y `ffprobe` dentro, por lo que en la
 computadora donde se use no hace falta instalar nada. Se puede:
 
-- copiar `convertir_hls_windows.exe` a la carpeta de los MKV y abrirlo con doble clic;
-- arrastrar un MKV o una carpeta encima del `.exe`;
+- copiar `convertir_hls_windows.exe` a la carpeta de los videos y abrirlo con doble clic;
+- arrastrar un video o una carpeta encima del `.exe`;
 - ejecutarlo desde PowerShell:
 
 ```powershell

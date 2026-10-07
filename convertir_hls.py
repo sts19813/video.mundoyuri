@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convierte archivos MKV a HLS y extrae todas sus pistas de subtitulos."""
+"""Convierte archivos de video a HLS y extrae sus pistas de subtitulos."""
 
 from __future__ import annotations
 
@@ -17,6 +17,11 @@ from urllib.parse import quote
 
 DEFAULT_CDN = "https://video.mundoyuri.com"
 HLS_SEGMENT_SECONDS = 20
+SUPPORTED_VIDEO_EXTENSIONS = {
+    ".3g2", ".3gp", ".avi", ".divx", ".flv", ".m2ts", ".m4v", ".mkv",
+    ".mov", ".mp4", ".mpeg", ".mpg", ".mts", ".mxf", ".ogv", ".ts",
+    ".vob", ".webm", ".wmv",
+}
 TEXT_SUBTITLE_CODECS = {
     "ass", "ssa", "subrip", "srt", "text", "mov_text", "webvtt",
 }
@@ -82,14 +87,12 @@ def probe_file(ffprobe: Path, source: Path) -> dict:
         raise ConversionError(f"ffprobe no pudo leer '{source.name}': {detail.strip()}") from exc
 
 
-def validate_mkv(source: Path, probe: dict) -> None:
-    if source.suffix.lower() != ".mkv":
-        raise ConversionError(f"Se omitio '{source.name}': la extension no es .mkv")
-    format_name = str(probe.get("format", {}).get("format_name", "")).lower()
-    if "matroska" not in format_name:
+def validate_source(source: Path) -> None:
+    if source.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:
+        supported = ", ".join(sorted(SUPPORTED_VIDEO_EXTENSIONS))
         raise ConversionError(
-            f"Se omitio '{source.name}': ffprobe indica contenedor "
-            f"'{format_name or 'desconocido'}', no Matroska."
+            f"Se omitio '{source.name}': la extension no es compatible "
+            f"({supported})."
         )
 
 
@@ -205,7 +208,7 @@ def video_settings(probe: dict) -> tuple[dict, dict | None]:
     videos = [s for s in probe.get("streams", []) if s.get("codec_type") == "video"]
     audios = [s for s in probe.get("streams", []) if s.get("codec_type") == "audio"]
     if not videos:
-        raise ConversionError("El MKV no contiene una pista de video.")
+        raise ConversionError("El archivo no contiene una pista de video.")
     return videos[0], audios[0] if audios else None
 
 
@@ -297,8 +300,8 @@ def process_file(
 ) -> str:
     print("\n" + "=" * 72)
     print(f"Procesando: {source.name}")
+    validate_source(source)
     probe = probe_file(ffprobe, source)
-    validate_mkv(source, probe)
     output = source.parent / f"{clean_output_name(source.stem)}.HLS"
     output.mkdir(parents=True, exist_ok=True)
     print(f"Salida:     {output}")
@@ -321,11 +324,15 @@ def select_sources(path: Path, convert_all: bool) -> list[Path]:
     if not path.is_dir():
         raise ConversionError(f"La ruta no existe: {path}")
     sources = sorted(
-        (item for item in path.iterdir() if item.is_file() and item.suffix.lower() == ".mkv"),
+        (
+            item for item in path.iterdir()
+            if item.is_file() and item.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
+        ),
         key=lambda item: item.name.lower(),
     )
     if not sources:
-        raise ConversionError(f"No se encontraron archivos MKV en: {path}")
+        supported = ", ".join(sorted(SUPPORTED_VIDEO_EXTENSIONS))
+        raise ConversionError(f"No se encontraron archivos de video ({supported}) en: {path}")
     if convert_all or not sys.stdin.isatty():
         return sources
 
@@ -348,13 +355,13 @@ def select_sources(path: Path, convert_all: bool) -> list[Path]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Valida MKV, extrae todas las pistas de subtitulos y genera HLS para MundoYuri."
+        description="Valida videos, extrae pistas de subtitulos y genera HLS para MundoYuri."
     )
     parser.add_argument(
         "ruta", nargs="?", type=Path,
-        help="Archivo MKV o carpeta. Sin argumento usa la carpeta del ejecutable/script.",
+        help="Archivo de video o carpeta. Sin argumento usa la carpeta del ejecutable/script.",
     )
-    parser.add_argument("--all", action="store_true", help="Procesa todos los MKV sin mostrar el menu.")
+    parser.add_argument("--all", action="store_true", help="Procesa todos los videos sin mostrar el menu.")
     parser.add_argument("--overwrite", action="store_true", help="Vuelve a generar archivos existentes.")
     parser.add_argument("--cdn", default=DEFAULT_CDN, help=f"URL base (predeterminado: {DEFAULT_CDN}).")
     parser.add_argument("--ffmpeg-dir", type=Path, help="Carpeta que contiene ffmpeg y ffprobe.")
