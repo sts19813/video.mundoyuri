@@ -42,7 +42,7 @@ PYINSTALLER_ARGS+=("$PROJECT_DIR/convertir_hls.py")
 cat > "$PROJECT_DIR/dist/convertir_hls_macos.command" <<'EOF'
 #!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-"$SCRIPT_DIR/convertir_hls_macos" --all
+"$SCRIPT_DIR/convertir_hls_macos"
 echo
 read -r -p "Proceso terminado. Presiona Enter para cerrar esta ventana..." _
 EOF

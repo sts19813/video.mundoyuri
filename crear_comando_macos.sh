@@ -46,7 +46,7 @@ if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; 
 fi
 
 if [[ "$#" -eq 0 ]]; then
-    python3 "$PY_FILE" "$SCRIPT_DIR" --all
+    python3 "$PY_FILE" "$SCRIPT_DIR"
 else
     python3 "$PY_FILE" "$@"
 fi
