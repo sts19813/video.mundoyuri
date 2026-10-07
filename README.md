@@ -2,7 +2,7 @@
 
 El conversor valida que cada entrada sea un MKV/Matroska real, extrae **todas** las
 pistas de subtitulos sin perdida (`.mks`), convierte a WebVTT las pistas de texto y
-genera HLS VOD con segmentos de 6 segundos.
+genera HLS VOD con segmentos de 20 segundos.
 
 Cada episodio produce:
 

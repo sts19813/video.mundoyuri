@@ -16,6 +16,7 @@ from urllib.parse import quote
 
 
 DEFAULT_CDN = "https://video.mundoyuri.com"
+HLS_SEGMENT_SECONDS = 20
 TEXT_SUBTITLE_CODECS = {
     "ass", "ssa", "subrip", "srt", "text", "mov_text", "webvtt",
 }
@@ -233,12 +234,14 @@ def create_media_hls(
         print(f"Video {codec or 'desconocido'}: se convertira a H.264 para compatibilidad web.")
         command.extend([
             "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-            "-pix_fmt", "yuv420p", "-force_key_frames", "expr:gte(t,n_forced*6)",
+            "-pix_fmt", "yuv420p", "-force_key_frames",
+            f"expr:gte(t,n_forced*{HLS_SEGMENT_SECONDS})",
         ])
     if audio:
         command.extend(["-c:a", "aac", "-b:a", "128k", "-ac", "2"])
     command.extend([
-        "-max_muxing_queue_size", "4096", "-f", "hls", "-hls_time", "6",
+        "-max_muxing_queue_size", "4096", "-f", "hls",
+        "-hls_time", str(HLS_SEGMENT_SECONDS),
         "-hls_playlist_type", "vod", "-hls_flags", "independent_segments+temp_file",
         "-hls_segment_filename", output / "segmento_%05d.ts", playlist,
     ])
