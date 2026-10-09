@@ -1,17 +1,30 @@
 # Conversor de video a HLS para MundoYuri
 
 El conversor acepta extensiones comunes de video (`.mkv`, `.mp4`, `.mov`, `.avi`,
-`.webm`, `.m4v`, `.ts`, entre otras), extrae **todas** las
-pistas de subtitulos sin perdida (`.mks`), convierte a WebVTT las pistas de texto y
-genera HLS VOD con segmentos de 20 segundos.
+`.webm`, `.m4v`, `.ts`, entre otras), detecta **todas** las pistas de audio,
+extrae **todas** las pistas de subtitulos sin perdida (`.mks`), convierte a
+WebVTT las pistas de texto y genera HLS VOD con segmentos de 20 segundos.
+
+Al abrirlo en modo interactivo, primero pregunta como optimizar:
+
+- conservar resolucion original o redimensionar a 720p, 480p o 360p;
+- conservar calidad, usar un perfil web ligero o usar un perfil muy ligero;
+- conservar salidas `.HLS` existentes o regenerarlas para aplicar el perfil nuevo;
+- convertir todos los archivos, uno especifico o varios usando coma/rangos
+  (`2,4-6`).
 
 Cada episodio produce:
 
 ```text
 Nombre.S01E01.HLS/
   master.m3u8              <- usar esta URL en el reproductor
-  index.m3u8               <- video HLS
+  index.m3u8               <- video HLS sin audio
   segmento_00000.ts
+  opciones.json            <- perfil usado para esta salida
+  audios/
+    pistas.json
+    pista_01/index.m3u8    <- audio HLS alterno
+    pista_02/index.m3u8
   subtitulos/
     pistas.json
     pista_01_es.mks         <- pista original, sin perdida
@@ -19,8 +32,9 @@ Nombre.S01E01.HLS/
     pista_01/index.m3u8     <- playlist HLS de subtitulos
 ```
 
-Las pistas graficas PGS/VobSub se guardan en `.mks`, pero no se agregan al playlist
-web porque necesitan OCR para convertirse en texto.
+El archivo `master.m3u8` enlaza el video con sus audios y subtitulos alternos.
+Las pistas graficas PGS/VobSub se guardan en `.mks`, pero no se agregan al
+playlist web porque necesitan OCR para convertirse en texto.
 
 ## Windows
 
@@ -35,14 +49,27 @@ computadora donde se use no hace falta instalar nada. Se puede:
 .\convertir_hls_windows.exe "F:\GL Project\Only You (1414)" --all
 ```
 
-Sin argumento, usa la carpeta donde se encuentra el ejecutable. Sin `--all`, muestra
-un menu para convertir toda la carpeta o un episodio. Si el video ya existe, lo
-conserva, pero vuelve a comprobar y completar los subtitulos y `master.m3u8`.
+Sin argumento, usa la carpeta donde se encuentra el ejecutable. Sin `--all`,
+muestra menus para elegir perfil de optimizacion, politica de regeneracion y
+archivos a convertir. Si el HLS ya existe y se elige conservarlo, vuelve a
+comprobar y completar audios, subtitulos y `master.m3u8`.
 
 Para forzar una regeneracion completa:
 
 ```powershell
 .\convertir_hls_windows.exe "F:\ruta\temporada" --all --overwrite
+```
+
+Para procesar todo sin menus y generar archivos mas ligeros:
+
+```powershell
+.\convertir_hls_windows.exe "F:\ruta\temporada" --all --overwrite --resolution 720p --quality web
+```
+
+Para hacerlos todavia mas pequenos:
+
+```powershell
+.\convertir_hls_windows.exe "F:\ruta\temporada" --all --overwrite --resolution 480p --quality minimo
 ```
 
 ## Compilar el ejecutable
@@ -73,5 +100,7 @@ chmod +x convertir_hls.command convertir_hls.sh
 --overwrite           regenera salidas existentes
 --cdn URL             cambia https://video.mundoyuri.com
 --ffmpeg-dir CARPETA  usa otra instalacion de FFmpeg
+--resolution VALOR    original, 720p, 480p o 360p
+--quality VALOR       original, web o minimo
 --no-pause            no espera Enter al terminar en Windows
 ```
