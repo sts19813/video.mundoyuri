@@ -218,7 +218,7 @@ def extract_subtitles(
 
         if overwrite or not raw_file.is_file():
             run([
-                ffmpeg, "-hide_banner", "-loglevel", "warning", "-y", "-i", source,
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", source,
                 "-map", f"0:{stream_index}", "-c", "copy", "-f", "matroska", raw_file,
             ])
 
@@ -236,7 +236,7 @@ def extract_subtitles(
             track_dir.mkdir(parents=True, exist_ok=True)
             if overwrite or not vtt_file.is_file():
                 run([
-                    ffmpeg, "-hide_banner", "-loglevel", "warning", "-y", "-i", source,
+                    ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", source,
                     "-map", f"0:{stream_index}", "-c:s", "webvtt", vtt_file,
                 ])
             shutil.copyfile(vtt_file, segment_file)
@@ -316,7 +316,7 @@ def create_video_hls(
     video, _ = video_settings(probe)
     codec = str(video.get("codec_name", "")).lower()
     command: list[str | Path] = [
-        ffmpeg, "-hide_banner", "-y", "-i", source,
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-stats", "-y", "-i", source,
         "-map", f"0:{video['index']}", "-an", "-sn", "-dn",
     ]
 
@@ -366,13 +366,14 @@ def create_audio_hls(
 
         if overwrite or not playlist_file.is_file():
             run([
-                ffmpeg, "-hide_banner", "-loglevel", "warning", "-y", "-i", source,
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-stats", "-y", "-i", source,
                 "-map", f"0:{stream_index}", "-vn", "-sn", "-dn",
                 "-c:a", "aac", "-b:a", options.audio_bitrate, "-ac", "2",
                 "-max_muxing_queue_size", "4096", "-f", "hls",
+                "-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4",
                 "-hls_time", str(HLS_SEGMENT_SECONDS),
                 "-hls_playlist_type", "vod", "-hls_flags", "independent_segments+temp_file",
-                "-hls_segment_filename", track_dir / "segmento_%05d.ts", playlist_file,
+                "-hls_segment_filename", track_dir / "segmento_%05d.m4s", playlist_file,
             ])
         else:
             print(f"El HLS de audio {number} ya existe; se conserva.")
