@@ -425,7 +425,8 @@ def create_master_playlist(
     if subtitle_tracks:
         attributes.append('SUBTITLES="subs"')
 
-    lines = ["#EXTM3U", "#EXT-X-VERSION:3"]
+    hls_version = 7 if audio_tracks else 3
+    lines = ["#EXTM3U", f"#EXT-X-VERSION:{hls_version}"]
 
     default_audio_set = False
     for position, track in enumerate(audio_tracks):
