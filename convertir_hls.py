@@ -19,7 +19,7 @@ from urllib.parse import quote
 DEFAULT_CDN = "https://video.mundoyuri.com"
 HLS_SEGMENT_SECONDS = 20
 AUDIO_TIMELINE_VERSION = 4
-AUDIO_ASSET_VERSION = "audio4-20261011"
+AUDIO_ASSET_VERSION = ""
 SUPPORTED_VIDEO_EXTENSIONS = {
     ".3g2", ".3gp", ".avi", ".divx", ".flv", ".m2ts", ".m4v", ".mkv",
     ".mov", ".mp4", ".mpeg", ".mpg", ".mts", ".mxf", ".ogv", ".ts",
@@ -283,6 +283,8 @@ def clean_hls_segments(folder: Path, patterns: tuple[str, ...]) -> None:
 
 
 def add_playlist_asset_version(playlist: Path, version: str) -> None:
+    if not version:
+        return
     if not playlist.is_file():
         return
     lines: list[str] = []

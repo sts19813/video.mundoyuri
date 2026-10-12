@@ -140,8 +140,9 @@ calidad original, usando el audio AAC original cuando sea compatible.
 ## Cloudflare
 
 Para `video.mundoyuri.com`, conserva cache habilitado para `.m3u8` y `.ts`.
-No ignores el query string en la cache key: las URLs `?v=audio4-20261011`
-se usan para separar audios nuevos de versiones viejas.
+Las conversiones nuevas generan playlists limpias, sin `?v=` en los segmentos.
+El query `?v=audio4-20261011` se uso solo para parches de audio existentes,
+para separar audios reparados de versiones viejas cacheadas.
 
 Configuracion recomendada:
 
@@ -149,7 +150,7 @@ Configuracion recomendada:
 Hostname: video.mundoyuri.com
 Path: *.m3u8 y *.ts
 Cache eligibility: Eligible for cache
-Cache key: incluir query string / standard
+Cache key: standard / incluir query string
 Edge TTL: 30 dias o mas para .ts
 Browser TTL: respetar origen o 1 dia
 ```
@@ -157,7 +158,7 @@ Browser TTL: respetar origen o 1 dia
 Validacion rapida de cache:
 
 ```bash
-curl -sS -L -o /dev/null -D - "https://video.mundoyuri.com/RUTA/segmento_00000.ts?v=audio4-20261011" \
+curl -sS -L -o /dev/null -D - "https://video.mundoyuri.com/RUTA/segmento_00000.ts" \
   | grep -iE "cf-cache-status|age|cache-control"
 ```
 
