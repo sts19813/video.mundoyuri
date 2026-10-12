@@ -52,7 +52,11 @@ fi
 
 DEFAULT_ARGS_PLACEHOLDER
 if [[ "$#" -eq 0 ]]; then
-    python3 "$PY_FILE" "$SCRIPT_DIR" "${DEFAULT_ARGS[@]}"
+    if [[ -n "$DEFAULT_ARGS" ]]; then
+        python3 "$PY_FILE" "$SCRIPT_DIR" $DEFAULT_ARGS
+    else
+        python3 "$PY_FILE" "$SCRIPT_DIR"
+    fi
 else
     python3 "$PY_FILE" "$@"
 fi
@@ -64,8 +68,8 @@ FOOTER
     chmod +x "$output_file"
 }
 
-write_command "$OUTPUT_FILE" 'DEFAULT_ARGS=()'
-write_command "$OUTPUT_AUTO_FILE" 'DEFAULT_ARGS=(--all --resolution original --quality original)'
+write_command "$OUTPUT_FILE" 'DEFAULT_ARGS=""'
+write_command "$OUTPUT_AUTO_FILE" 'DEFAULT_ARGS="--all --resolution original --quality original"'
 
 echo "Comando creado en: $OUTPUT_FILE"
 echo "Comando automatico creado en: $OUTPUT_AUTO_FILE"
