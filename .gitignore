@@ -2,3 +2,8 @@ build/
 dist/
 *.spec
 __pycache__/
+.DS_Store
+parches_audio*/
+reporte_hls_*.csv
+mundoyuri_audio_delete_*.json
+mundoyuri_audio_delete_*.jsonl

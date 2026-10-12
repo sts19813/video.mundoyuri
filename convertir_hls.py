@@ -18,6 +18,8 @@ from urllib.parse import quote
 
 DEFAULT_CDN = "https://video.mundoyuri.com"
 HLS_SEGMENT_SECONDS = 20
+AUDIO_TIMELINE_VERSION = 4
+AUDIO_ASSET_VERSION = "audio4-20261011"
 SUPPORTED_VIDEO_EXTENSIONS = {
     ".3g2", ".3gp", ".avi", ".divx", ".flv", ".m2ts", ".m4v", ".mkv",
     ".mov", ".mp4", ".mpeg", ".mpg", ".mts", ".mxf", ".ogv", ".ts",
@@ -186,6 +188,16 @@ def metadata_value(stream: dict, key: str, fallback: str = "") -> str:
     return str(stream.get("tags", {}).get(key, fallback)).strip()
 
 
+def audio_encode_args(stream: dict, bitrate: str, *, prefer_copy: bool) -> tuple[list[str], str]:
+    codec = str(stream.get("codec_name", "")).lower()
+    if prefer_copy and codec == "aac":
+        return ["-c:a", "copy"], "copy"
+    return [
+        "-af", "aresample=async=1:first_pts=0",
+        "-c:a", "aac", "-b:a", bitrate, "-ac", "2",
+    ], bitrate
+
+
 def escape_m3u8(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', "\\\"").replace("\r", " ").replace("\n", " ")
 
@@ -196,6 +208,90 @@ def duration_seconds(probe: dict) -> float:
         return max(float(raw), 0.001)
     except (TypeError, ValueError):
         return 1.0
+
+
+def existing_audio_timeline_version(audio_root: Path) -> int:
+    metadata_file = audio_root / "pistas.json"
+    if not metadata_file.is_file():
+        return 0
+    try:
+        data = json.loads(metadata_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if not isinstance(data, list) or not data:
+        return 0
+    versions: list[int] = []
+    for item in data:
+        if not isinstance(item, dict):
+            return 0
+        try:
+            versions.append(int(item.get("timeline_version", 0)))
+        except (TypeError, ValueError):
+            return 0
+    return min(versions, default=0)
+
+
+def playlist_first_dts(ffprobe: Path, playlist: Path, stream_selector: str) -> float:
+    if not playlist.is_file():
+        return 0.0
+    try:
+        result = run([
+            ffprobe, "-v", "error", "-select_streams", stream_selector,
+            "-show_entries", "packet=dts_time,pts_time", "-read_intervals", "%+1",
+            "-of", "json", playlist,
+        ], capture=True)
+        packets = json.loads(result.stdout).get("packets", [])
+    except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
+        return 0.0
+    if not packets:
+        return 0.0
+    for key in ("dts_time", "pts_time"):
+        try:
+            return max(float(packets[0].get(key, 0)), 0.0)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def playlist_durations(playlist: Path) -> list[float]:
+    if not playlist.is_file():
+        return []
+    durations: list[float] = []
+    for match in re.finditer(
+        r"^#EXTINF:([0-9]+(?:\.[0-9]+)?)",
+        playlist.read_text(encoding="utf-8", errors="replace"),
+        flags=re.MULTILINE,
+    ):
+        durations.append(float(match.group(1)))
+    return durations
+
+
+def cumulative_segment_times(durations: list[float]) -> list[float]:
+    total = 0.0
+    times: list[float] = []
+    for duration in durations[:-1]:
+        total += duration
+        times.append(total)
+    return times
+
+
+def clean_hls_segments(folder: Path, patterns: tuple[str, ...]) -> None:
+    for pattern in patterns:
+        for item in folder.glob(pattern):
+            if item.is_file():
+                item.unlink()
+
+
+def add_playlist_asset_version(playlist: Path, version: str) -> None:
+    if not playlist.is_file():
+        return
+    lines: list[str] = []
+    for line in playlist.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "?" not in stripped:
+            line = f"{line}?v={version}"
+        lines.append(line)
+    playlist.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def extract_subtitles(
@@ -315,8 +411,10 @@ def create_video_hls(
 
     video, _ = video_settings(probe)
     codec = str(video.get("codec_name", "")).lower()
+    clean_hls_segments(output, ("segmento_*.ts", "segmento_*.m4s", "init.mp4"))
     command: list[str | Path] = [
-        ffmpeg, "-hide_banner", "-loglevel", "error", "-stats", "-y", "-i", source,
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-stats", "-y",
+        "-copyts", "-start_at_zero", "-i", source,
         "-map", f"0:{video['index']}", "-an", "-sn", "-dn",
     ]
 
@@ -337,7 +435,9 @@ def create_video_hls(
             f"expr:gte(t,n_forced*{HLS_SEGMENT_SECONDS})",
         ])
     command.extend([
-        "-max_muxing_queue_size", "4096", "-f", "hls",
+        "-max_muxing_queue_size", "4096",
+        "-muxpreload", "0", "-muxdelay", "0",
+        "-f", "hls",
         "-hls_time", str(HLS_SEGMENT_SECONDS),
         "-hls_playlist_type", "vod", "-hls_flags", "independent_segments+temp_file",
         "-hls_segment_filename", output / "segmento_%05d.ts", playlist,
@@ -346,12 +446,18 @@ def create_video_hls(
 
 
 def create_audio_hls(
-    ffmpeg: Path, source: Path, output: Path, probe: dict,
+    ffmpeg: Path, ffprobe: Path, source: Path, output: Path, probe: dict,
     options: EncodingOptions, overwrite: bool
 ) -> list[dict]:
     _, audios = video_settings(probe)
     audio_root = output / "audios"
     audio_root.mkdir(parents=True, exist_ok=True)
+    timeline_is_current = (
+        existing_audio_timeline_version(audio_root) >= AUDIO_TIMELINE_VERSION
+    )
+    video_playlist = output / "index.m3u8"
+    video_timeline_offset = playlist_first_dts(ffprobe, video_playlist, "v:0")
+    video_segment_times = cumulative_segment_times(playlist_durations(video_playlist))
     inventory: list[dict] = []
     web_tracks: list[dict] = []
 
@@ -363,18 +469,52 @@ def create_audio_hls(
         track_dir = audio_root / f"pista_{number:02d}"
         playlist_file = track_dir / "index.m3u8"
         track_dir.mkdir(parents=True, exist_ok=True)
+        refresh_timeline = playlist_file.is_file() and not overwrite and not timeline_is_current
+        stored_bitrate = options.audio_bitrate
 
-        if overwrite or not playlist_file.is_file():
-            run([
-                ffmpeg, "-hide_banner", "-loglevel", "error", "-stats", "-y", "-i", source,
+        if overwrite or not playlist_file.is_file() or refresh_timeline:
+            if refresh_timeline:
+                print(f"El HLS de audio {number} se regenerara para corregir sincronizacion.")
+            if playlist_file.is_file():
+                clean_hls_segments(track_dir, ("segmento_*.m4s", "segmento_*.ts", "init.mp4", "index.m3u8"))
+            audio_args, stored_bitrate = audio_encode_args(
+                stream, options.audio_bitrate, prefer_copy=options.quality == "original"
+            )
+            command: list[str | Path] = [
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-stats", "-y",
+                "-copyts", "-start_at_zero", "-i", source,
                 "-map", f"0:{stream_index}", "-vn", "-sn", "-dn",
-                "-c:a", "aac", "-b:a", options.audio_bitrate, "-ac", "2",
-                "-max_muxing_queue_size", "4096", "-f", "hls",
-                "-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4",
-                "-hls_time", str(HLS_SEGMENT_SECONDS),
-                "-hls_playlist_type", "vod", "-hls_flags", "independent_segments+temp_file",
-                "-hls_segment_filename", track_dir / "segmento_%05d.m4s", playlist_file,
+                *audio_args,
+                "-max_muxing_queue_size", "4096",
+                "-muxpreload", "0", "-muxdelay", "0",
+            ]
+            if video_timeline_offset > 0.001:
+                command.extend(["-output_ts_offset", f"{video_timeline_offset:.6f}"])
+            command.extend([
+                "-f", "segment",
+                "-segment_list", playlist_file,
+                "-segment_list_type", "m3u8",
+                "-segment_format", "mpegts",
+                "-reset_timestamps", "0",
+                "-break_non_keyframes", "1",
             ])
+            if video_segment_times:
+                command.extend([
+                    "-segment_times",
+                    ",".join(f"{time:.6f}" for time in video_segment_times),
+                ])
+            else:
+                command.extend(["-segment_time", str(HLS_SEGMENT_SECONDS)])
+            command.append(track_dir / "segmento_%05d.ts")
+            run(command)
+            audio_timeline_offset = playlist_first_dts(ffprobe, playlist_file, "a:0")
+            timeline_delta = abs(video_timeline_offset - audio_timeline_offset)
+            if timeline_delta > 0.25:
+                raise ConversionError(
+                    f"Audio {number} quedo desalineado "
+                    f"({timeline_delta:.3f}s contra el video)."
+                )
+            add_playlist_asset_version(playlist_file, AUDIO_ASSET_VERSION)
         else:
             print(f"El HLS de audio {number} ya existe; se conserva.")
 
@@ -382,7 +522,10 @@ def create_audio_hls(
             "numero": number, "indice_ffmpeg": stream_index, "codec": codec,
             "idioma": language, "titulo": title,
             "playlist": f"audios/pista_{number:02d}/index.m3u8",
-            "bitrate": options.audio_bitrate,
+            "bitrate": stored_bitrate,
+            "timeline_version": AUDIO_TIMELINE_VERSION,
+            "video_timeline_offset": round(video_timeline_offset, 6),
+            "segmentacion": "alineada_al_video",
         }
         inventory.append(item)
         web_tracks.append({
@@ -472,9 +615,9 @@ def process_file(
     print(f"Salida:     {output}")
     print(f"Perfil:     {options.summary()}")
 
-    subtitle_tracks = extract_subtitles(ffmpeg, source, output, probe, overwrite)
-    audio_tracks = create_audio_hls(ffmpeg, source, output, probe, options, overwrite)
     create_video_hls(ffmpeg, source, output, probe, options, overwrite)
+    subtitle_tracks = extract_subtitles(ffmpeg, source, output, probe, overwrite)
+    audio_tracks = create_audio_hls(ffmpeg, ffprobe, source, output, probe, options, overwrite)
     create_master_playlist(output, probe, subtitle_tracks, audio_tracks, options)
     (output / "opciones.json").write_text(
         json.dumps(options.as_json(), ensure_ascii=False, indent=2) + "\n",

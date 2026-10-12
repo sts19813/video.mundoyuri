@@ -4,6 +4,8 @@ El conversor acepta extensiones comunes de video (`.mkv`, `.mp4`, `.mov`, `.avi`
 `.webm`, `.m4v`, `.ts`, entre otras), detecta **todas** las pistas de audio,
 extrae **todas** las pistas de subtitulos sin perdida (`.mks`), convierte a
 WebVTT las pistas de texto y genera HLS VOD con segmentos de 20 segundos.
+Las pistas de audio alternas se segmentan usando el mismo mapa de tiempos del
+video para evitar drift o desfase durante el episodio.
 
 Al abrirlo en modo interactivo, primero pregunta como optimizar:
 
@@ -23,7 +25,7 @@ Nombre.S01E01.HLS/
   opciones.json            <- perfil usado para esta salida
   audios/
     pistas.json
-    pista_01/index.m3u8    <- audio HLS alterno
+    pista_01/index.m3u8    <- audio HLS alterno MPEG-TS alineado al video
     pista_02/index.m3u8
   subtitulos/
     pistas.json
@@ -35,6 +37,10 @@ Nombre.S01E01.HLS/
 El archivo `master.m3u8` enlaza el video con sus audios y subtitulos alternos.
 Las pistas graficas PGS/VobSub se guardan en `.mks`, pero no se agregan al
 playlist web porque necesitan OCR para convertirse en texto.
+
+Cuando se usa calidad `original`, el conversor conserva el audio AAC original
+con `copy`. Si la fuente trae audio no compatible con HLS web, lo convierte a
+AAC usando el bitrate del perfil elegido.
 
 ## Windows
 
@@ -60,6 +66,12 @@ Para forzar una regeneracion completa:
 .\convertir_hls_windows.exe "F:\ruta\temporada" --all --overwrite
 ```
 
+Para una conversion nueva conservando resolucion y audio AAC original:
+
+```powershell
+.\convertir_hls_windows.exe "F:\ruta\temporada" --all --overwrite --resolution original --quality original
+```
+
 Para procesar todo sin menus y generar archivos mas ligeros:
 
 ```powershell
@@ -83,6 +95,12 @@ winget install --id Gyan.FFmpeg --exact
 .\compilar_windows.ps1
 ```
 
+El `.exe` nuevo queda en:
+
+```text
+dist\convertir_hls_windows.exe
+```
+
 ## macOS
 
 El mismo motor sigue funcionando mediante `convertir_hls.command`. Requiere Python 3
@@ -91,6 +109,38 @@ y FFmpeg, por ejemplo:
 ```bash
 brew install python ffmpeg
 chmod +x convertir_hls.command convertir_hls.sh
+```
+
+Conversion nueva recomendada en Mac:
+
+```bash
+./convertir_hls.sh "/Users/tu_usuario/Downloads/Temporada" --all --overwrite --resolution original --quality original
+```
+
+Para abrir con doble clic, usa `convertir_hls.command`.
+
+## Cloudflare
+
+Para `video.mundoyuri.com`, conserva cache habilitado para `.m3u8` y `.ts`.
+No ignores el query string en la cache key: las URLs `?v=audio4-20261011`
+se usan para separar audios nuevos de versiones viejas.
+
+Configuracion recomendada:
+
+```text
+Hostname: video.mundoyuri.com
+Path: *.m3u8 y *.ts
+Cache eligibility: Eligible for cache
+Cache key: incluir query string / standard
+Edge TTL: 30 dias o mas para .ts
+Browser TTL: respetar origen o 1 dia
+```
+
+Validacion rapida de cache:
+
+```bash
+curl -sS -L -o /dev/null -D - "https://video.mundoyuri.com/RUTA/segmento_00000.ts?v=audio4-20261011" \
+  | grep -iE "cf-cache-status|age|cache-control"
 ```
 
 ## Opciones
