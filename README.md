@@ -119,6 +119,24 @@ Conversion nueva recomendada en Mac:
 
 Para abrir con doble clic, usa `convertir_hls.command`.
 
+Para crear un `.command` autocontenido que puedas copiar dentro de una carpeta
+de videos:
+
+```bash
+./crear_comando_macos.sh
+```
+
+Eso genera:
+
+```text
+dist/convertir_hls_macos.command          <- abre menus
+dist/convertir_hls_todo_original.command <- procesa toda la carpeta
+```
+
+Copia `dist/convertir_hls_todo_original.command` dentro de la carpeta de la
+temporada y abrelo con doble clic. Procesa todos los videos con resolucion y
+calidad original, usando el audio AAC original cuando sea compatible.
+
 ## Cloudflare
 
 Para `video.mundoyuri.com`, conserva cache habilitado para `.m3u8` y `.ts`.
