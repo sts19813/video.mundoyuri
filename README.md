@@ -10,7 +10,8 @@ video para evitar drift o desfase durante el episodio.
 Al abrirlo en modo interactivo, primero pregunta como optimizar:
 
 - conservar resolucion original o redimensionar a 720p, 480p o 360p;
-- conservar calidad, usar un perfil web ligero o usar un perfil muy ligero;
+- elegir entre calidad original, web equilibrada, web rápida, web ligera o muy ligera;
+- usar `libx264` por software o, si el equipo lo admite, aceleración de hardware;
 - conservar salidas `.HLS` existentes o regenerarlas para aplicar el perfil nuevo;
 - convertir todos los archivos, uno especifico o varios usando coma/rangos
   (`2,4-6`).
@@ -78,6 +79,19 @@ Para procesar todo sin menus y generar archivos mas ligeros:
 .\convertir_hls_windows.exe "F:\ruta\temporada" --all --overwrite --resolution 720p --quality web
 ```
 
+Para convertir más rápido con la GTX (requiere que el FFmpeg incluido tenga
+NVENC y que el controlador NVIDIA esté instalado):
+
+```powershell
+.\convertir_hls_windows.exe "F:\ruta\temporada" --all --overwrite --resolution 720p --quality web_rapido --encoder hardware
+```
+
+Para priorizar archivos ligeros conservando una calidad web razonable:
+
+```powershell
+.\convertir_hls_windows.exe "F:\ruta\temporada" --all --overwrite --resolution 720p --quality web_ligero
+```
+
 Para hacerlos todavia mas pequenos:
 
 ```powershell
@@ -115,6 +129,14 @@ Conversion nueva recomendada en Mac:
 
 ```bash
 ./convertir_hls.sh "/Users/tu_usuario/Downloads/Temporada" --all --overwrite --resolution original --quality original
+```
+
+En un Mac con Apple Silicon, este comando usa el codificador acelerado
+VideoToolbox. Es mucho más rápido que software; `libx264` normalmente comprime
+un poco mejor a igual calidad visual:
+
+```bash
+./convertir_hls.sh "/Users/tu_usuario/Downloads/Temporada" --all --overwrite --resolution 720p --quality web_rapido --encoder hardware
 ```
 
 Para abrir con doble clic, usa `convertir_hls.command`.
@@ -170,6 +192,26 @@ curl -sS -L -o /dev/null -D - "https://video.mundoyuri.com/RUTA/segmento_00000.t
 --cdn URL             cambia https://video.mundoyuri.com
 --ffmpeg-dir CARPETA  usa otra instalacion de FFmpeg
 --resolution VALOR    original, 720p, 480p o 360p
---quality VALOR       original, web o minimo
+--quality VALOR       original, web, web_rapido, web_ligero o minimo
+--encoder VALOR       software (libx264) o hardware (VideoToolbox/NVENC)
 --no-pause            no espera Enter al terminar en Windows
 ```
+
+## Perfiles de video
+
+Todos generan H.264 `yuv420p`, segmentos HLS de 20 segundos y conservan la
+misma lógica de alineación de audio. Con software, los perfiles usan CRF: el
+tamaño final depende del contenido del episodio y no es un bitrate fijo.
+
+| Perfil | Video por software | Audio | Uso recomendado |
+|---|---|---:|---|
+| `original` | CRF 20, `medium` | AAC 128k o copia AAC | máxima calidad práctica |
+| `web` | CRF 26, `medium` | 96k | equilibrio habitual |
+| `web_rapido` | CRF 27, `fast` | 80k | reducir tiempo de conversión |
+| `web_ligero` | CRF 28, `slow` | 80k | reducir tamaño manteniendo calidad decente |
+| `minimo` | CRF 30, `slow` | 64k | archivos muy pequeños |
+
+Al usar `--encoder hardware`, VideoToolbox o NVENC usa el bitrate objetivo del
+perfil en vez del CRF de x264. Esto hace su peso más predecible y acelera la
+conversión, pero su eficiencia de compresión puede ser algo inferior a
+`libx264`.

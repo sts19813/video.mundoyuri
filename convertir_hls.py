@@ -41,9 +41,19 @@ QUALITY_CHOICES = {
         "bandwidth": {2160: 12_000_000, 1080: 5_000_000, 720: 2_800_000, 480: 1_600_000, 360: 900_000},
     },
     "web": {
-        "label": "Web ligera",
+        "label": "Web equilibrada",
         "crf": 26, "audio_bitrate": "96k", "preset": "medium",
         "bandwidth": {2160: 4_500_000, 1080: 2_200_000, 720: 1_200_000, 480: 750_000, 360: 450_000},
+    },
+    "web_rapido": {
+        "label": "Web rápida (prioriza tiempo)",
+        "crf": 27, "audio_bitrate": "80k", "preset": "fast",
+        "bandwidth": {2160: 3_500_000, 1080: 1_800_000, 720: 1_000_000, 480: 600_000, 360: 350_000},
+    },
+    "web_ligero": {
+        "label": "Web ligera (prioriza tamaño)",
+        "crf": 28, "audio_bitrate": "80k", "preset": "slow",
+        "bandwidth": {2160: 2_800_000, 1080: 1_500_000, 720: 850_000, 480: 500_000, 360: 300_000},
     },
     "minimo": {
         "label": "Muy ligero",
@@ -61,6 +71,7 @@ class ConversionError(RuntimeError):
 class EncodingOptions:
     resolution: str
     quality: str
+    encoder: str
 
     @property
     def target_height(self) -> int | None:
@@ -85,7 +96,8 @@ class EncodingOptions:
     def summary(self) -> str:
         return (
             f"{RESOLUTION_CHOICES[self.resolution]['label']} + "
-            f"{QUALITY_CHOICES[self.quality]['label']}"
+            f"{QUALITY_CHOICES[self.quality]['label']} + "
+            f"{encoder_label(self.encoder)}"
         )
 
     def as_json(self) -> dict:
@@ -95,6 +107,7 @@ class EncodingOptions:
             "target_height": self.target_height,
             "video_crf": self.crf,
             "audio_bitrate": self.audio_bitrate,
+            "video_encoder": self.encoder,
         }
 
 
@@ -130,6 +143,50 @@ def find_program(name: str, explicit_dir: Path | None = None) -> Path | None:
             return candidate
     resolved = shutil.which(name)
     return Path(resolved) if resolved else None
+
+
+def available_video_encoders(ffmpeg: Path) -> set[str]:
+    """Devuelve los codificadores de video publicados por este FFmpeg."""
+    try:
+        result = run([ffmpeg, "-hide_banner", "-encoders"], capture=True)
+    except (subprocess.CalledProcessError, OSError):
+        return set()
+    encoders: set[str] = set()
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].startswith("V"):
+            encoders.add(parts[1])
+    return encoders
+
+
+def hardware_encoder(available: set[str]) -> str | None:
+    """Elige el acelerador nativo de la plataforma, si FFmpeg lo incluye."""
+    candidates = ("h264_videotoolbox", "h264_nvenc") if sys.platform == "darwin" else ("h264_nvenc",)
+    return next((encoder for encoder in candidates if encoder in available), None)
+
+
+def encoder_label(encoder: str) -> str:
+    labels = {
+        "libx264": "software (libx264)",
+        "h264_videotoolbox": "hardware (VideoToolbox)",
+        "h264_nvenc": "hardware (NVIDIA NVENC)",
+    }
+    return labels.get(encoder, encoder)
+
+
+def resolve_video_encoder(ffmpeg: Path, preference: str) -> str:
+    available = available_video_encoders(ffmpeg)
+    if preference == "software":
+        if "libx264" not in available:
+            raise ConversionError("Este FFmpeg no incluye libx264 para codificar H.264 por software.")
+        return "libx264"
+    selected = hardware_encoder(available)
+    if selected:
+        return selected
+    platform = "VideoToolbox" if sys.platform == "darwin" else "NVIDIA NVENC"
+    raise ConversionError(
+        f"No se encontro {platform} en este FFmpeg. Elige software o instala/actualiza FFmpeg y el controlador de video."
+    )
 
 
 def run(command: list[str | Path], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
@@ -402,6 +459,21 @@ def estimated_bandwidth(probe: dict, video: dict, options: EncodingOptions) -> i
     return int(preset[closest_height])
 
 
+def video_encode_args(probe: dict, video: dict, options: EncodingOptions) -> list[str]:
+    """Argumentos de codificación de video para CPU o aceleración de hardware."""
+    if options.encoder == "libx264":
+        return [
+            "-c:v", "libx264", "-preset", options.preset,
+            "-crf", str(options.crf),
+        ]
+
+    # Los codificadores de hardware no comparten el CRF de x264. Usar el
+    # bitrate objetivo del perfil da un resultado predecible y compatible
+    # entre VideoToolbox y NVENC, sin alterar la linea de tiempo HLS.
+    bitrate = estimated_bandwidth(probe, video, options)
+    return ["-c:v", options.encoder, "-b:v", str(bitrate)]
+
+
 def create_video_hls(
     ffmpeg: Path, source: Path, output: Path, probe: dict,
     options: EncodingOptions, overwrite: bool
@@ -432,7 +504,7 @@ def create_video_hls(
         if target_height:
             command.extend(["-vf", f"scale=-2:min(ih\\,{target_height})"])
         command.extend([
-            "-c:v", "libx264", "-preset", options.preset, "-crf", str(options.crf),
+            *video_encode_args(probe, video, options),
             "-pix_fmt", "yuv420p", "-force_key_frames",
             f"expr:gte(t,n_forced*{HLS_SEGMENT_SECONDS})",
         ])
@@ -653,9 +725,10 @@ def prompt_choice(title: str, choices: list[tuple[str, str]], default: int = 1) 
         print(f"Opcion invalida. Escribe un numero entre 1 y {len(choices)}.")
 
 
-def choose_processing_options(args: argparse.Namespace) -> EncodingOptions:
+def choose_processing_options(args: argparse.Namespace, ffmpeg: Path) -> EncodingOptions:
     resolution = args.resolution
     quality = args.quality
+    encoder_preference = args.encoder
     if sys.stdin.isatty():
         if not resolution:
             resolution = prompt_choice(
@@ -669,6 +742,15 @@ def choose_processing_options(args: argparse.Namespace) -> EncodingOptions:
                 [(key, str(value["label"])) for key, value in QUALITY_CHOICES.items()],
                 default=2,
             )
+        if not encoder_preference:
+            available = available_video_encoders(ffmpeg)
+            choices = [("software", "Software (libx264: mejor eficiencia/calidad)")]
+            selected_hardware = hardware_encoder(available)
+            if selected_hardware:
+                choices.append(("hardware", f"Hardware ({encoder_label(selected_hardware)}: más rápido)"))
+            encoder_preference = prompt_choice(
+                "Motor de video:", choices, default=1,
+            )
         if not args.overwrite:
             overwrite_choice = prompt_choice(
                 "Si ya existe una salida .HLS:",
@@ -680,9 +762,11 @@ def choose_processing_options(args: argparse.Namespace) -> EncodingOptions:
             )
             args.overwrite = overwrite_choice == "yes"
 
+    preference = encoder_preference or "software"
     return EncodingOptions(
         resolution=resolution or "original",
         quality=quality or "original",
+        encoder=resolve_video_encoder(ffmpeg, preference),
     )
 
 
@@ -762,7 +846,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--quality", choices=QUALITY_CHOICES,
-        help="Calidad/peso sin menu: original, web o minimo.",
+        help="Calidad/peso sin menu: original, web, web_rapido, web_ligero o minimo.",
+    )
+    parser.add_argument(
+        "--encoder", choices=("software", "hardware"),
+        help="Motor de video: software (libx264) o hardware (VideoToolbox/NVENC).",
     )
     parser.add_argument("--no-pause", action="store_true", help="No espera Enter al terminar.")
     return parser.parse_args()
@@ -786,7 +874,7 @@ def main() -> int:
             )
 
         target = (args.ruta or application_dir()).expanduser().resolve()
-        options = choose_processing_options(args)
+        options = choose_processing_options(args, ffmpeg)
         sources = select_sources(target, args.all)
         urls: list[str] = []
         failures: list[str] = []
