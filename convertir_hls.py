@@ -20,6 +20,14 @@ DEFAULT_CDN = "https://video.mundoyuri.com"
 HLS_SEGMENT_SECONDS = 20
 AUDIO_TIMELINE_VERSION = 4
 AUDIO_ASSET_VERSION = ""
+HLS_LAYOUT_MUXED_SINGLE_AUDIO = "muxed_single_audio"
+HLS_LAYOUT_SEPARATE_MULTI_AUDIO = "separate_multi_audio"
+HLS_LAYOUT_VIDEO_ONLY = "video_only"
+HLS_LAYOUTS = {
+    HLS_LAYOUT_MUXED_SINGLE_AUDIO,
+    HLS_LAYOUT_SEPARATE_MULTI_AUDIO,
+    HLS_LAYOUT_VIDEO_ONLY,
+}
 SUPPORTED_VIDEO_EXTENSIONS = {
     ".3g2", ".3gp", ".avi", ".divx", ".flv", ".m2ts", ".m4v", ".mkv",
     ".mov", ".mp4", ".mpeg", ".mpg", ".mts", ".mxf", ".ogv", ".ts",
@@ -245,12 +253,20 @@ def metadata_value(stream: dict, key: str, fallback: str = "") -> str:
     return str(stream.get("tags", {}).get(key, fallback)).strip()
 
 
-def audio_encode_args(stream: dict, bitrate: str, *, prefer_copy: bool) -> tuple[list[str], str]:
+def audio_encode_args(
+    stream: dict, bitrate: str, *, prefer_copy: bool,
+    preserve_timestamps: bool = False,
+) -> tuple[list[str], str]:
     codec = str(stream.get("codec_name", "")).lower()
     if prefer_copy and codec == "aac":
         return ["-c:a", "copy"], "copy"
+    # La salida multiplexada comparte reloj con el video. No se debe forzar
+    # el primer PTS a cero: una pista con retraso intencional conservara su
+    # posicion relativa al recodificarse. Las pistas externas mantienen la
+    # normalizacion historica y su ajuste contra la linea de tiempo de video.
+    resample = "aresample=async=1" if preserve_timestamps else "aresample=async=1:first_pts=0"
     return [
-        "-af", "aresample=async=1:first_pts=0",
+        "-af", resample,
         "-c:a", "aac", "-b:a", bitrate, "-ac", "2",
     ], bitrate
 
@@ -432,6 +448,73 @@ def video_settings(probe: dict) -> tuple[dict, list[dict]]:
     return videos[0], audios
 
 
+def hls_layout_for(audios: list[dict]) -> str:
+    """El formato HLS depende del numero de alternativas de audio."""
+    if len(audios) == 1:
+        return HLS_LAYOUT_MUXED_SINGLE_AUDIO
+    if len(audios) > 1:
+        return HLS_LAYOUT_SEPARATE_MULTI_AUDIO
+    return HLS_LAYOUT_VIDEO_ONLY
+
+
+def saved_hls_layout(output: Path) -> str | None:
+    """Lee el formato declarado por versiones nuevas del conversor."""
+    settings_file = output / "opciones.json"
+    if not settings_file.is_file():
+        return None
+    try:
+        settings = json.loads(settings_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    layout = settings.get("hls_layout") if isinstance(settings, dict) else None
+    return layout if layout in HLS_LAYOUTS else None
+
+
+def detected_hls_layout(ffprobe: Path, output: Path) -> str | None:
+    """Reconoce salidas antiguas que no tenian metadatos de formato.
+
+    Una playlist principal con audio es la nueva salida multiplexada. Las
+    conversiones antiguas usaban un indice solo video y el arbol ``audios``.
+    """
+    declared = saved_hls_layout(output)
+    if declared:
+        return declared
+    playlist = output / "index.m3u8"
+    if not playlist.is_file():
+        return None
+    try:
+        playlist_probe = probe_file(ffprobe, playlist)
+    except ConversionError:
+        # Una conversion antigua incompleta no se puede reutilizar con
+        # seguridad; el llamador pedira --overwrite si el formato no coincide.
+        playlist_probe = {}
+    streams = playlist_probe.get("streams", [])
+    if any(stream.get("codec_type") == "audio" for stream in streams):
+        return HLS_LAYOUT_MUXED_SINGLE_AUDIO
+    audio_root = output / "audios"
+    if (audio_root / "pistas.json").is_file() or any(audio_root.glob("pista_*/index.m3u8")):
+        return HLS_LAYOUT_SEPARATE_MULTI_AUDIO
+    return HLS_LAYOUT_VIDEO_ONLY
+
+
+def ensure_compatible_existing_hls(
+    ffprobe: Path, output: Path, desired_layout: str, overwrite: bool
+) -> None:
+    """Evita mezclar segmentos y manifests de layouts incompatibles."""
+    existing_layout = detected_hls_layout(ffprobe, output)
+    if (
+        existing_layout
+        and existing_layout != desired_layout
+        and not overwrite
+    ):
+        raise ConversionError(
+            "La salida HLS existente usa el formato "
+            f"'{existing_layout}', pero esta fuente requiere '{desired_layout}'. "
+            "No se modifico para no mezclar segmentos antiguos. "
+            "Vuelve a ejecutar con --overwrite para regenerar el video."
+        )
+
+
 def output_dimensions(video: dict, options: EncodingOptions) -> tuple[int | None, int | None]:
     width, height = video.get("width"), video.get("height")
     if not width or not height:
@@ -459,6 +542,16 @@ def estimated_bandwidth(probe: dict, video: dict, options: EncodingOptions) -> i
     return int(preset[closest_height])
 
 
+def audio_bandwidth(stream: dict, options: EncodingOptions) -> int:
+    """Bitrate anunciado para la unica pista activa de una variante HLS."""
+    if options.quality == "original" and str(stream.get("codec_name", "")).lower() == "aac":
+        try:
+            return max(32_000, int(float(stream.get("bit_rate", 0))))
+        except (TypeError, ValueError):
+            pass
+    return int(options.audio_bitrate.rstrip("kK")) * 1_000
+
+
 def video_encode_args(probe: dict, video: dict, options: EncodingOptions) -> list[str]:
     """Argumentos de codificación de video para CPU o aceleración de hardware."""
     if options.encoder == "libx264":
@@ -476,21 +569,33 @@ def video_encode_args(probe: dict, video: dict, options: EncodingOptions) -> lis
 
 def create_video_hls(
     ffmpeg: Path, source: Path, output: Path, probe: dict,
-    options: EncodingOptions, overwrite: bool
+    options: EncodingOptions, overwrite: bool, layout: str
 ) -> None:
     playlist = output / "index.m3u8"
     if playlist.is_file() and not overwrite:
         print("El HLS de video ya existe; se conserva y se actualizan pistas/master.")
         return
 
-    video, _ = video_settings(probe)
+    video, audios = video_settings(probe)
     codec = str(video.get("codec_name", "")).lower()
     clean_hls_segments(output, ("segmento_*.ts", "segmento_*.m4s", "init.mp4"))
     command: list[str | Path] = [
         ffmpeg, "-hide_banner", "-loglevel", "error", "-stats", "-y",
         "-copyts", "-start_at_zero", "-i", source,
-        "-map", f"0:{video['index']}", "-an", "-sn", "-dn",
+        "-map", f"0:{video['index']}", "-sn", "-dn",
     ]
+    if layout == HLS_LAYOUT_MUXED_SINGLE_AUDIO:
+        # Solo hay una alternativa: incluirla en cada segmento evita que el
+        # reproductor tenga que descargar una playlist y un TS extra por tramo.
+        audio = audios[0]
+        command.extend(["-map", f"0:{audio['index']}"])
+        audio_args, _ = audio_encode_args(
+            audio, options.audio_bitrate, prefer_copy=options.quality == "original",
+            preserve_timestamps=True,
+        )
+        command.extend(audio_args)
+    else:
+        command.append("-an")
 
     if codec == "h264" and options.can_copy_h264:
         command.extend(["-c:v", "copy"])
@@ -524,6 +629,8 @@ def create_audio_hls(
     options: EncodingOptions, overwrite: bool
 ) -> list[dict]:
     _, audios = video_settings(probe)
+    if len(audios) < 2:
+        return []
     audio_root = output / "audios"
     audio_root.mkdir(parents=True, exist_ok=True)
     timeline_is_current = (
@@ -626,10 +733,17 @@ def parse_fraction(value: str) -> float | None:
 
 def create_master_playlist(
     output: Path, probe: dict, subtitle_tracks: list[dict],
-    audio_tracks: list[dict], options: EncodingOptions
+    audio_tracks: list[dict], options: EncodingOptions, layout: str
 ) -> None:
-    video, _ = video_settings(probe)
+    video, audios = video_settings(probe)
     bandwidth = estimated_bandwidth(probe, video, options)
+    # Los perfiles web estiman el video. Para una variante con audio, anunciar
+    # tambien la pista que el reproductor descargara junto con ella. El bitrate
+    # del contenedor original ya incluye audio, por lo que no se suma dos veces.
+    if layout != HLS_LAYOUT_VIDEO_ONLY and not (
+        options.quality == "original" and options.resolution == "original"
+    ) and audios:
+        bandwidth += audio_bandwidth(audios[0], options)
     attributes = [f"BANDWIDTH={bandwidth}"]
     width, height = output_dimensions(video, options)
     if width and height:
@@ -637,27 +751,28 @@ def create_master_playlist(
     frame_rate = parse_fraction(str(video.get("avg_frame_rate", "")))
     if frame_rate:
         attributes.append(f"FRAME-RATE={frame_rate:.3f}")
-    if audio_tracks:
+    if layout == HLS_LAYOUT_SEPARATE_MULTI_AUDIO and audio_tracks:
         attributes.append('AUDIO="audios"')
     if subtitle_tracks:
         attributes.append('SUBTITLES="subs"')
 
-    hls_version = 7 if audio_tracks else 3
+    hls_version = 7 if layout == HLS_LAYOUT_SEPARATE_MULTI_AUDIO and audio_tracks else 3
     lines = ["#EXTM3U", f"#EXT-X-VERSION:{hls_version}"]
 
     default_audio_set = False
-    for position, track in enumerate(audio_tracks):
-        is_default = track["default"] and not default_audio_set
-        if not default_audio_set and position == 0 and not any(t["default"] for t in audio_tracks):
-            is_default = True
-        default_audio_set = default_audio_set or is_default
-        lines.append(
-            '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audios",'
-            f'NAME="{escape_m3u8(track["name"])}",'
-            f'LANGUAGE="{escape_m3u8(track["language"])}",'
-            f"DEFAULT={'YES' if is_default else 'NO'},AUTOSELECT=YES,"
-            f'URI="{track["playlist"]}"'
-        )
+    if layout == HLS_LAYOUT_SEPARATE_MULTI_AUDIO:
+        for position, track in enumerate(audio_tracks):
+            is_default = track["default"] and not default_audio_set
+            if not default_audio_set and position == 0 and not any(t["default"] for t in audio_tracks):
+                is_default = True
+            default_audio_set = default_audio_set or is_default
+            lines.append(
+                '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audios",'
+                f'NAME="{escape_m3u8(track["name"])}",'
+                f'LANGUAGE="{escape_m3u8(track["language"])}",'
+                f"DEFAULT={'YES' if is_default else 'NO'},AUTOSELECT=YES,"
+                f'URI="{track["playlist"]}"'
+            )
 
     default_already_set = False
     for position, track in enumerate(subtitle_tracks):
@@ -689,12 +804,31 @@ def process_file(
     print(f"Salida:     {output}")
     print(f"Perfil:     {options.summary()}")
 
-    create_video_hls(ffmpeg, source, output, probe, options, overwrite)
+    _, audios = video_settings(probe)
+    layout = hls_layout_for(audios)
+    ensure_compatible_existing_hls(ffprobe, output, layout, overwrite)
+    layout_description = {
+        HLS_LAYOUT_MUXED_SINGLE_AUDIO: "video y unica pista de audio integrados",
+        HLS_LAYOUT_SEPARATE_MULTI_AUDIO: "video y pistas de audio alternativas separadas",
+        HLS_LAYOUT_VIDEO_ONLY: "solo video (sin pistas de audio)",
+    }[layout]
+    print(f"Formato HLS: {layout_description}.")
+
+    create_video_hls(ffmpeg, source, output, probe, options, overwrite, layout)
     subtitle_tracks = extract_subtitles(ffmpeg, source, output, probe, overwrite)
-    audio_tracks = create_audio_hls(ffmpeg, ffprobe, source, output, probe, options, overwrite)
-    create_master_playlist(output, probe, subtitle_tracks, audio_tracks, options)
+    audio_tracks = (
+        create_audio_hls(ffmpeg, ffprobe, source, output, probe, options, overwrite)
+        if layout == HLS_LAYOUT_SEPARATE_MULTI_AUDIO else []
+    )
+    create_master_playlist(output, probe, subtitle_tracks, audio_tracks, options, layout)
+    saved_options = options.as_json()
+    saved_options.update({
+        "hls_layout": layout,
+        "audio_track_count": len(audios),
+        "hls_segment_seconds": HLS_SEGMENT_SECONDS,
+    })
     (output / "opciones.json").write_text(
-        json.dumps(options.as_json(), ensure_ascii=False, indent=2) + "\n",
+        json.dumps(saved_options, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
 

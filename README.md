@@ -4,8 +4,10 @@ El conversor acepta extensiones comunes de video (`.mkv`, `.mp4`, `.mov`, `.avi`
 `.webm`, `.m4v`, `.ts`, entre otras), detecta **todas** las pistas de audio,
 extrae **todas** las pistas de subtitulos sin perdida (`.mks`), convierte a
 WebVTT las pistas de texto y genera HLS VOD con segmentos de 20 segundos.
-Las pistas de audio alternas se segmentan usando el mismo mapa de tiempos del
-video para evitar drift o desfase durante el episodio.
+Con una sola pista de audio, cada segmento TS incluye video y audio para que
+Hls.js no solicite una playlist y segmentos de audio adicionales. Con dos o
+mas pistas, se conservan como alternativas y se segmentan usando el mismo mapa
+de tiempos del video para evitar drift o desfase durante el episodio.
 
 Al abrirlo en modo interactivo, primero pregunta como optimizar:
 
@@ -19,15 +21,11 @@ Al abrirlo en modo interactivo, primero pregunta como optimizar:
 Cada episodio produce:
 
 ```text
-Nombre.S01E01.HLS/
+Nombre.S01E01.HLS/         <- una pista de audio (caso habitual)
   master.m3u8              <- usar esta URL en el reproductor
-  index.m3u8               <- video HLS sin audio
+  index.m3u8               <- HLS MPEG-TS con video y audio integrados
   segmento_00000.ts
-  opciones.json            <- perfil usado para esta salida
-  audios/
-    pistas.json
-    pista_01/index.m3u8    <- audio HLS alterno MPEG-TS alineado al video
-    pista_02/index.m3u8
+  opciones.json            <- perfil y formato usado para esta salida
   subtitulos/
     pistas.json
     pista_01_es.mks         <- pista original, sin perdida
@@ -35,7 +33,22 @@ Nombre.S01E01.HLS/
     pista_01/index.m3u8     <- playlist HLS de subtitulos
 ```
 
-El archivo `master.m3u8` enlaza el video con sus audios y subtitulos alternos.
+Con dos o mas pistas de audio, `index.m3u8` contiene solo video y se agrega:
+
+```text
+  audios/
+    pistas.json
+    pista_01/index.m3u8    <- audio HLS alterno MPEG-TS alineado al video
+    pista_02/index.m3u8
+```
+
+En ese caso `master.m3u8` enlaza el video con sus audios y subtitulos
+alternos. Si no hay audio, solo publica el video y no incluye referencias de
+audio. `opciones.json` guarda `hls_layout` como `muxed_single_audio`,
+`separate_multi_audio` o `video_only`. El conversor lo usa (y verifica
+playlists antiguas sin ese metadato) para no mezclar formatos incompatibles;
+para cambiarlos hay que ejecutar con `--overwrite`. Las carpetas `audios/`
+existentes no se eliminan automaticamente.
 Las pistas graficas PGS/VobSub se guardan en `.mks`, pero no se agregan al
 playlist web porque necesitan OCR para convertirse en texto.
 
@@ -59,7 +72,8 @@ computadora donde se use no hace falta instalar nada. Se puede:
 Sin argumento, usa la carpeta donde se encuentra el ejecutable. Sin `--all`,
 muestra menus para elegir perfil de optimizacion, politica de regeneracion y
 archivos a convertir. Si el HLS ya existe y se elige conservarlo, vuelve a
-comprobar y completar audios, subtitulos y `master.m3u8`.
+comprobar el formato, completar subtitulos y `master.m3u8` y, cuando hay audio
+multiple, completar las pistas alternativas.
 
 Para forzar una regeneracion completa:
 
@@ -199,9 +213,13 @@ curl -sS -L -o /dev/null -D - "https://video.mundoyuri.com/RUTA/segmento_00000.t
 
 ## Perfiles de video
 
-Todos generan H.264 `yuv420p`, segmentos HLS de 20 segundos y conservan la
-misma lógica de alineación de audio. Con software, los perfiles usan CRF: el
+Todos generan H.264 `yuv420p` y segmentos HLS de 20 segundos. Con audio
+alternativo conservan la misma lógica de alineación; con una unica pista, el
+audio AAC se multiplexa en los mismos segmentos que el video. Con software, los perfiles usan CRF: el
 tamaño final depende del contenido del episodio y no es un bitrate fijo.
+Al recodificar video se fuerzan fotogramas clave para aproximar ese intervalo;
+al copiar H.264 se respetan los fotogramas clave de la fuente, por lo que la
+duración exacta de cada segmento puede variar.
 
 | Perfil | Video por software | Audio | Uso recomendado |
 |---|---|---:|---|
