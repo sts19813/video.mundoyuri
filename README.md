@@ -3,7 +3,7 @@
 El conversor acepta extensiones comunes de video (`.mkv`, `.mp4`, `.mov`, `.avi`,
 `.webm`, `.m4v`, `.ts`, entre otras), detecta **todas** las pistas de audio,
 extrae **todas** las pistas de subtitulos sin perdida (`.mks`), convierte a
-WebVTT las pistas de texto y genera HLS VOD con segmentos de 20 segundos.
+WebVTT las pistas de texto y genera HLS VOD con segmentos de 25 segundos.
 Con una sola pista de audio, cada segmento TS incluye video y audio para que
 Hls.js no solicite una playlist y segmentos de audio adicionales. Con dos o
 mas pistas, se conservan como alternativas y se segmentan usando el mismo mapa
@@ -213,13 +213,18 @@ curl -sS -L -o /dev/null -D - "https://video.mundoyuri.com/RUTA/segmento_00000.t
 
 ## Perfiles de video
 
-Todos generan H.264 `yuv420p` y segmentos HLS de 20 segundos. Con audio
+Todos generan H.264 `yuv420p` y segmentos HLS de 25 segundos. Con audio
 alternativo conservan la misma lógica de alineación; con una unica pista, el
 audio AAC se multiplexa en los mismos segmentos que el video. Con software, los perfiles usan CRF: el
 tamaño final depende del contenido del episodio y no es un bitrate fijo.
 Al recodificar video se fuerzan fotogramas clave para aproximar ese intervalo;
 al copiar H.264 se respetan los fotogramas clave de la fuente, por lo que la
 duración exacta de cada segmento puede variar.
+
+Las conversiones nuevas usan 25 segundos. Una salida HLS ya existente se
+conserva sin cambios si no se indica `--overwrite`; para pasar una salida
+anterior de 20 a 25 segundos hay que regenerarla con `--overwrite`, para que
+video y pistas de audio alternativas compartan el mismo mapa temporal.
 
 | Perfil | Video por software | Audio | Uso recomendado |
 |---|---|---:|---|

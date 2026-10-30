@@ -16,7 +16,7 @@ from urllib.parse import unquote, urlparse
 
 AUDIO_TIMELINE_VERSION = 4
 AUDIO_ASSET_VERSION = "audio4-20261011"
-HLS_SEGMENT_SECONDS = 20
+HLS_SEGMENT_SECONDS = 25
 VIDEO_EXTENSIONS = {
     ".3g2", ".3gp", ".avi", ".divx", ".flv", ".m2ts", ".m4v", ".mkv",
     ".mov", ".mp4", ".mpeg", ".mpg", ".mts", ".mxf", ".ogv", ".ts",

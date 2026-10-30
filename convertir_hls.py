@@ -17,7 +17,7 @@ from urllib.parse import quote
 
 
 DEFAULT_CDN = "https://video.mundoyuri.com"
-HLS_SEGMENT_SECONDS = 20
+HLS_SEGMENT_SECONDS = 25
 AUDIO_TIMELINE_VERSION = 4
 AUDIO_ASSET_VERSION = ""
 HLS_LAYOUT_MUXED_SINGLE_AUDIO = "muxed_single_audio"
@@ -470,6 +470,19 @@ def saved_hls_layout(output: Path) -> str | None:
     return layout if layout in HLS_LAYOUTS else None
 
 
+def saved_hls_segment_seconds(output: Path) -> int | None:
+    """Devuelve el intervalo declarado por una conversion anterior, si existe."""
+    settings_file = output / "opciones.json"
+    if not settings_file.is_file():
+        return None
+    try:
+        settings = json.loads(settings_file.read_text(encoding="utf-8"))
+        seconds = int(settings.get("hls_segment_seconds"))
+    except (OSError, json.JSONDecodeError, AttributeError, TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
+
 def detected_hls_layout(ffprobe: Path, output: Path) -> str | None:
     """Reconoce salidas antiguas que no tenian metadatos de formato.
 
@@ -570,11 +583,11 @@ def video_encode_args(probe: dict, video: dict, options: EncodingOptions) -> lis
 def create_video_hls(
     ffmpeg: Path, source: Path, output: Path, probe: dict,
     options: EncodingOptions, overwrite: bool, layout: str
-) -> None:
+) -> bool:
     playlist = output / "index.m3u8"
     if playlist.is_file() and not overwrite:
         print("El HLS de video ya existe; se conserva y se actualizan pistas/master.")
-        return
+        return False
 
     video, audios = video_settings(probe)
     codec = str(video.get("codec_name", "")).lower()
@@ -622,6 +635,7 @@ def create_video_hls(
         "-hls_segment_filename", output / "segmento_%05d.ts", playlist,
     ])
     run(command)
+    return True
 
 
 def create_audio_hls(
@@ -814,7 +828,9 @@ def process_file(
     }[layout]
     print(f"Formato HLS: {layout_description}.")
 
-    create_video_hls(ffmpeg, source, output, probe, options, overwrite, layout)
+    video_was_regenerated = create_video_hls(
+        ffmpeg, source, output, probe, options, overwrite, layout
+    )
     subtitle_tracks = extract_subtitles(ffmpeg, source, output, probe, overwrite)
     audio_tracks = (
         create_audio_hls(ffmpeg, ffprobe, source, output, probe, options, overwrite)
@@ -825,8 +841,16 @@ def process_file(
     saved_options.update({
         "hls_layout": layout,
         "audio_track_count": len(audios),
-        "hls_segment_seconds": HLS_SEGMENT_SECONDS,
     })
+    # No se debe afirmar que una salida conservada paso de 20 a 25 segundos.
+    # Solo --overwrite (o una salida nueva) reconstruye video y audio con el
+    # nuevo mapa de segmentos.
+    if video_was_regenerated:
+        saved_options["hls_segment_seconds"] = HLS_SEGMENT_SECONDS
+    else:
+        previous_segment_seconds = saved_hls_segment_seconds(output)
+        if previous_segment_seconds:
+            saved_options["hls_segment_seconds"] = previous_segment_seconds
     (output / "opciones.json").write_text(
         json.dumps(saved_options, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
